@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "python3 scripts/fetch-drive-assets.py || python scripts/fetch-drive-assets.py",
+    "fetch-models": "python3 scripts/fetch-drive-assets.py || python scripts/fetch-drive-assets.py",
+    "predev": "npm run fetch-models",
+    "prebuild": "npm run fetch-models",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
