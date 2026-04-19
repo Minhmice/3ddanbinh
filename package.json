@@ -8,7 +8,7 @@
     "prebuild": "npm run fetch-models",
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "npx -y serve@latest out",
     "lint": "eslint"
   },
   "dependencies": {
