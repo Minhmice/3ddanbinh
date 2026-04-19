@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "python scripts/fetch-drive-assets.py",
+    "postinstall": "python3 scripts/fetch-drive-assets.py || python scripts/fetch-drive-assets.py",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
