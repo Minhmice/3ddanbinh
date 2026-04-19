@@ -88,20 +88,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       return () => { cancelled = true; };
     }, []);
 
-    // ── 2. Load events for EAGER models only (gate for loading screen) ──
-    useEffect(() => {
-      if (!viewerReady) return;
-
-      const handleEagerLoad = () => setEagerLoadedCount((c) => c + 1);
-
-      ANATOMY_LAYERS.forEach((config, index) => {
-        if (!config.eager) return; // skip lazy layers
-        const layer = layerRefs.current[index];
-        if (!layer) return;
-        if (layer.loaded) handleEagerLoad();
-        else layer.addEventListener("load", handleEagerLoad, { once: true });
-      });
-    }, [viewerReady]);
+    // ── 2. Load events for EAGER models are handled directly in handleLayerRef ──
 
     // ── 3. Notify parent when eager models loaded ══
     useEffect(() => {
@@ -136,23 +123,34 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
     // ── 4. On lazy layer mount → sync camera immediately ──
     const handleLayerRef = useCallback(
-      (index: number) => (node: any) => {
+      (index: number, config: any) => (node: any) => {
         const prev = layerRefs.current[index];
         layerRefs.current[index] = node;
 
-        // If this is a NEW mount (prev was null, now it's not), sync camera
-        if (node && !prev && index !== BASE_INDEX) {
-          // Need to wait for the element to be ready
-          const trySync = () => {
-            if (node.loaded) {
-              syncCameraToLayer(node);
+        // If this is a NEW mount (prev was null, now it's not)
+        if (node && !prev) {
+          // Track Eager loads securely
+          if (config.eager) {
+            if (node.modelIsVisible) {
+              setEagerLoadedCount((c) => c + 1);
             } else {
-              node.addEventListener("load", () => syncCameraToLayer(node), { once: true });
+              node.addEventListener("load", () => setEagerLoadedCount((c) => c + 1), { once: true });
             }
-          };
+          }
 
-          // Small delay to ensure model-viewer custom element is upgraded
-          requestAnimationFrame(trySync);
+          if (index !== BASE_INDEX) {
+            // Need to wait for the element to be ready
+            const trySync = () => {
+              if (node.modelIsVisible) {
+                syncCameraToLayer(node);
+              } else {
+                node.addEventListener("load", () => syncCameraToLayer(node), { once: true });
+              }
+            };
+
+            // Small delay to ensure model-viewer custom element is upgraded
+            requestAnimationFrame(trySync);
+          }
         }
       },
       [syncCameraToLayer]
@@ -362,7 +360,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
             <model-viewer
               key={config.id}
               id={`layer-${config.id}`}
-              ref={handleLayerRef(index)}
+              ref={handleLayerRef(index, config)}
               src={config.src}
               alt={config.label}
               camera-controls={isBase && introComplete ? true : undefined}

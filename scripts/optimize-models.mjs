@@ -29,10 +29,23 @@ async function getFileSizeMB(filePath) {
 async function optimizeModel(filePath) {
   const name = basename(filePath);
   const tmpOut = filePath.replace(".glb", "_optimized.glb");
+  const backupPath = filePath.replace(".glb", "_original.glb");
+
+  // Smart skip: if current file is already small (< 10MB), likely already optimized
+  const currentSize = await getFileSizeMB(filePath);
+  let hasBackup = false;
+  try {
+    await stat(backupPath);
+    hasBackup = true;
+  } catch {}
+
+  if (hasBackup && parseFloat(currentSize) < 10) {
+    console.log(`\n⏭ Skipping: ${name} (already optimized, ${currentSize} MB)`);
+    return;
+  }
 
   console.log(`\n🔧 Optimizing: ${name}`);
-  const beforeMB = await getFileSizeMB(filePath);
-  console.log(`   📦 Before: ${beforeMB} MB`);
+  console.log(`   📦 Before: ${currentSize} MB`);
 
   if (DRY_RUN) {
     console.log("   ⏭ Dry run — skipping.");
@@ -53,11 +66,16 @@ async function optimizeModel(filePath) {
     execSync(cmd, { stdio: "inherit" });
 
     const afterMB = await getFileSizeMB(tmpOut);
-    const savings = (((beforeMB - afterMB) / beforeMB) * 100).toFixed(1);
+    const savings = (((currentSize - afterMB) / currentSize) * 100).toFixed(1);
 
-    // Replace original with optimized
-    const backupPath = filePath.replace(".glb", "_original.glb");
-    await rename(filePath, backupPath);
+    // Backup original (only if no backup exists yet)
+    if (!hasBackup) {
+      await rename(filePath, backupPath);
+    } else {
+      // Remove the re-downloaded unoptimized file
+      const { unlink } = await import("node:fs/promises");
+      await unlink(filePath);
+    }
     await rename(tmpOut, filePath);
 
     console.log(`   ✅ After: ${afterMB} MB (${savings}% smaller)`);

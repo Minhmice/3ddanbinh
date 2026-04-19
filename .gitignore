@@ -43,3 +43,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 /types/
+
+# model optimization backups
+*_original.glb
+*_optimized.glb

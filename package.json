@@ -5,8 +5,9 @@
   "scripts": {
     "fetch-models": "python3 scripts/fetch-drive-assets.py || python scripts/fetch-drive-assets.py",
     "optimize-models": "node scripts/optimize-models.mjs",
-    "predev": "npm run fetch-models",
-    "prebuild": "npm run fetch-models",
+    "prepare-models": "npm run fetch-models && npm run optimize-models",
+    "predev": "npm run prepare-models",
+    "prebuild": "npm run prepare-models",
     "dev": "next dev",
     "build": "next build",
     "start": "npx -y serve@latest out",
