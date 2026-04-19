@@ -2,7 +2,7 @@
 
 import { gsap } from "gsap";
 import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from "react";
-import { ANATOMY_LAYERS, EAGER_COUNT } from "@/lib/layer-config";
+import { ANATOMY_LAYERS } from "@/lib/layer-config";
 import type { LayerName } from "@/lib/layer-config";
 import type { ModelViewerElement } from "@/types/model-viewer";
 
@@ -17,33 +17,33 @@ const ORBIT_START_MOBILE = { az: 75, el: 45, r: 24 } as const;
 const TARGET_DEFAULT = "3m 3m 0.92m";
 const TARGET_MOBILE = "3.2m 3m 0.92m";
 const INTRO_DURATION = 1.5;
-
+const TOTAL_LAYERS = ANATOMY_LAYERS.length;
 const BASE_INDEX = 0;
 
 type GlbModelViewerProps = {
   introEnabled?: boolean;
   onModelLoaded?: () => void;
   cameraDebugOpen?: boolean;
+  /** Controls visibility (opacity) of each layer. All are always mounted. */
   enabledLayers: Record<LayerName, boolean>;
 };
 
 export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps>(
   ({ introEnabled = true, onModelLoaded, cameraDebugOpen = false, enabledLayers }, ref) => {
     const [viewerReady, setViewerReady] = useState(false);
-    const [eagerLoadedCount, setEagerLoadedCount] = useState(0);
+    const [loadedCount, setLoadedCount] = useState(0);
     const [introComplete, setIntroComplete] = useState(false);
     const [debugOrbit, setDebugOrbit] = useState("");
     const [isMobile, setIsMobile] = useState(false);
 
     useEffect(() => {
-      const checkMobile = () => setIsMobile(window.innerWidth < 768);
-      checkMobile();
-      window.addEventListener("resize", checkMobile);
-      return () => window.removeEventListener("resize", checkMobile);
+      const check = () => setIsMobile(window.innerWidth < 768);
+      check();
+      window.addEventListener("resize", check);
+      return () => window.removeEventListener("resize", check);
     }, []);
 
-    const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(ANATOMY_LAYERS.length).fill(null));
-
+    const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(TOTAL_LAYERS).fill(null));
     useImperativeHandle(ref, () => layerRefs.current[BASE_INDEX] as ModelViewerElement, []);
 
     // ── 1. Script injection ──
@@ -70,79 +70,24 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       return () => { cancelled = true; };
     }, []);
 
-    // ── 2. Count eager model loads via useEffect (NOT in ref callback) ──
+    // ── 2. Wait for ALL models to load ──
     useEffect(() => {
       if (!viewerReady) return;
-      const handleLoad = () => setEagerLoadedCount((c) => c + 1);
+      const handleLoad = () => setLoadedCount((c) => c + 1);
 
-      ANATOMY_LAYERS.forEach((config, index) => {
-        if (!config.eager) return;
-        const el = layerRefs.current[index];
+      layerRefs.current.forEach((el) => {
         if (!el) return;
         if (el.loaded) handleLoad();
         else el.addEventListener("load", handleLoad, { once: true });
       });
     }, [viewerReady]);
 
-    // ── 3. Notify parent when eager models loaded ──
+    // ── 3. Notify parent when ALL models loaded ──
     useEffect(() => {
-      if (eagerLoadedCount >= EAGER_COUNT) onModelLoaded?.();
-    }, [eagerLoadedCount, onModelLoaded]);
+      if (loadedCount >= TOTAL_LAYERS) onModelLoaded?.();
+    }, [loadedCount, onModelLoaded]);
 
-    // ── Helper: sync camera from base to a specific layer ──
-    const syncCameraToLayer = useCallback((layer: ModelViewerElement) => {
-      const base = layerRefs.current[BASE_INDEX];
-      if (!base || typeof base.getCameraOrbit !== "function") return;
-      try {
-        const orbit = base.getCameraOrbit().toString();
-        const target = base.getCameraTarget().toString();
-        const fov = base.getFieldOfView();
-        layer.cameraOrbit = orbit;
-        layer.cameraTarget = target;
-        layer.fieldOfView = `${fov}deg`;
-        layer.setAttribute("camera-orbit", orbit);
-        layer.setAttribute("camera-target", target);
-        layer.setAttribute("field-of-view", `${fov}deg`);
-        if (typeof layer.jumpCameraToGoal === "function") layer.jumpCameraToGoal();
-      } catch (e) {
-        console.error("[CameraSync] Error syncing to layer", e);
-      }
-    }, []);
-
-    // ── 4. Sync camera when lazy layers mount/unmount ──
-    // We watch enabledLayers changes and sync any newly mounted layers
-    const prevEnabledRef = useRef(enabledLayers);
-    useEffect(() => {
-      const prev = prevEnabledRef.current;
-      prevEnabledRef.current = enabledLayers;
-
-      // Find layers that just became enabled (were false, now true)
-      ANATOMY_LAYERS.forEach((config, index) => {
-        if (index === BASE_INDEX) return;
-        const wasEnabled = prev[config.id];
-        const nowEnabled = enabledLayers[config.id];
-
-        if (!wasEnabled && nowEnabled) {
-          // Layer just toggled ON — wait for mount + load, then sync camera
-          const waitAndSync = () => {
-            const el = document.getElementById(`layer-${config.id}`) as ModelViewerElement | null;
-            if (!el) return;
-
-            const doSync = () => syncCameraToLayer(el);
-            if (el.loaded) {
-              doSync();
-            } else {
-              el.addEventListener("load", doSync, { once: true });
-            }
-          };
-
-          // Give React a frame to mount the element
-          requestAnimationFrame(() => requestAnimationFrame(waitAndSync));
-        }
-      });
-    }, [enabledLayers, syncCameraToLayer]);
-
-    // ── 5. Synchronize Camera from Base → all mounted Overlays ──
+    // ── 4. Camera sync: Base → all overlays ──
     useEffect(() => {
       if (!viewerReady) return;
       const base = layerRefs.current[BASE_INDEX];
@@ -162,8 +107,8 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
             `Orbit: (AZ) ${Math.round((orb.theta * 180) / Math.PI)}° | (EL) ${Math.round((orb.phi * 180) / Math.PI)}° | Zoom (R) ${orb.radius.toFixed(2)}m\nTarget (Pan): X: ${tgt.x.toFixed(3)} | Y: ${tgt.y.toFixed(3)} | Z: ${tgt.z.toFixed(3)}`
           );
 
-          layerRefs.current.forEach((layer, index) => {
-            if (index !== BASE_INDEX && layer) {
+          layerRefs.current.forEach((layer, i) => {
+            if (i !== BASE_INDEX && layer) {
               try {
                 layer.cameraOrbit = orbit;
                 layer.cameraTarget = target;
@@ -173,12 +118,12 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
                 layer.setAttribute("field-of-view", `${fov}deg`);
                 if (typeof layer.jumpCameraToGoal === "function") layer.jumpCameraToGoal();
               } catch (e) {
-                console.error("[CameraSync] Error on layer", index, e);
+                console.error("[CameraSync] Error on layer", i, e);
               }
             }
           });
         } catch (e) {
-          console.error("[CameraSync] Critical Error", e);
+          console.error("[CameraSync] Critical", e);
         }
       };
 
@@ -186,7 +131,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       return () => base.removeEventListener("camera-change", syncCamera);
     }, [viewerReady]);
 
-    // ── 6. Idle Rotation ──
+    // ── 5. Idle Rotation ──
     useEffect(() => {
       if (!viewerReady || !introComplete) return;
       const base = layerRefs.current[BASE_INDEX];
@@ -209,7 +154,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       };
 
       const handleInteract = (e: any) => {
-        if (e.detail && e.detail.source === "user-interaction") stopIdleAndReset();
+        if (e.detail?.source === "user-interaction") stopIdleAndReset();
       };
 
       const loop = () => {
@@ -217,17 +162,13 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         const now = performance.now();
         const dt = Math.min(now - lastTime, 50);
         lastTime = now;
-
-        const rotSpeedRad = (Math.PI / 180) * (dt / 1000);
+        const rotSpeed = (Math.PI / 180) * (dt / 1000);
         const orb = base.getCameraOrbit();
         const fov = base.getFieldOfView();
         const tgt = base.getCameraTarget();
-
         if (orb) {
-          const newTheta = orb.theta + rotSpeedRad;
-          const orbitStr = `${newTheta}rad ${orb.phi}rad ${orb.radius}m`;
+          const orbitStr = `${orb.theta + rotSpeed}rad ${orb.phi}rad ${orb.radius}m`;
           const targetStr = `${tgt.x}m ${tgt.y}m ${tgt.z}m`;
-
           layerRefs.current.forEach((layer) => {
             if (layer) {
               layer.cameraOrbit = orbitStr;
@@ -250,51 +191,42 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       };
     }, [viewerReady, introComplete]);
 
-    // ── 7. Intro Animation ──
+    // ── 6. Intro Animation ──
     useEffect(() => {
-      if (!viewerReady || eagerLoadedCount < EAGER_COUNT || !introEnabled) return;
+      if (!viewerReady || loadedCount < TOTAL_LAYERS || !introEnabled) return;
       const base = layerRefs.current[BASE_INDEX];
       if (!base) return;
 
       setIntroComplete(false);
-      const applyOrbit = (az: number, elDeg: number, r: number) => {
-        base.cameraOrbit = `${az}deg ${elDeg}deg ${r}m`;
+      const applyOrbit = (az: number, el: number, r: number) => {
+        base.cameraOrbit = `${az}deg ${el}deg ${r}m`;
         base.jumpCameraToGoal();
       };
       const finishIntro = () => setIntroComplete(true);
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
       base.updateFraming().catch(() => {}).finally(() => {
-        const finalOrbit = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
-        const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
-
-        if (reduceMotion) {
-          applyOrbit(finalOrbit.az, finalOrbit.el, finalOrbit.r);
-          finishIntro();
-          return;
-        }
-
-        const state = { az: startOrbit.az, el: startOrbit.el, r: startOrbit.r };
+        const end = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+        const start = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
+        if (reduceMotion) { applyOrbit(end.az, end.el, end.r); finishIntro(); return; }
+        const state = { az: start.az, el: start.el, r: start.r };
         gsap.to(state, {
-          az: finalOrbit.az,
-          el: finalOrbit.el,
-          r: finalOrbit.r,
-          duration: INTRO_DURATION,
-          ease: "power3.out",
+          az: end.az, el: end.el, r: end.r,
+          duration: INTRO_DURATION, ease: "power3.out",
           onUpdate: () => applyOrbit(state.az, state.el, state.r),
           onComplete: finishIntro,
         });
       });
-    }, [viewerReady, eagerLoadedCount, introEnabled, isMobile]);
+    }, [viewerReady, loadedCount, introEnabled, isMobile]);
 
     // ── Render ──
-    const currentOrbitStart = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
-    const initialOrbit = `${currentOrbitStart.az}deg ${currentOrbitStart.el}deg ${currentOrbitStart.r}m`;
+    const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
+    const initialOrbit = `${startOrbit.az}deg ${startOrbit.el}deg ${startOrbit.r}m`;
     const currentTarget = isMobile ? TARGET_MOBILE : TARGET_DEFAULT;
 
     if (!viewerReady) {
       return (
-        <div className="fixed inset-0 z-30 flex flex-col bg-[#e7e7e7] text-muted-foreground items-center justify-center" aria-busy="true">
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-[#e7e7e7]" aria-busy="true">
           Loading 3D viewer…
         </div>
       );
@@ -303,8 +235,8 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     const handleDoubleClick = () => {
       if (!introComplete) return;
       const base = layerRefs.current[BASE_INDEX];
-      const orbitEnd = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
-      if (base) base.cameraOrbit = `${orbitEnd.az}deg ${orbitEnd.el}deg ${orbitEnd.r}m`;
+      const end = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+      if (base) base.cameraOrbit = `${end.az}deg ${end.el}deg ${end.r}m`;
     };
 
     return (
@@ -312,9 +244,6 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         {ANATOMY_LAYERS.map((config, index) => {
           const isBase = index === BASE_INDEX;
           const isEnabled = enabledLayers[config.id];
-
-          // Don't mount lazy layers until enabled
-          if (!config.eager && !isEnabled) return null;
 
           return (
             <model-viewer
@@ -331,13 +260,12 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
               min-field-of-view="10deg"
               max-field-of-view="170deg"
               interaction-prompt="none"
-              loading={config.eager ? "eager" : "lazy"}
               className={`block w-full h-[100dvh] absolute inset-0 bg-transparent [&::part(default-progress-bar)]:hidden ${
                 !isBase ? "pointer-events-none" : ""
               }`}
               style={{
                 opacity: isEnabled ? 1 : 0,
-                transition: "opacity 0.4s ease-out",
+                transition: "opacity 0.5s ease-out",
               }}
             />
           );

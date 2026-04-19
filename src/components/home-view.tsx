@@ -9,9 +9,9 @@ import { LayerPanel } from "@/components/layer-panel";
 import { Settings, Camera, X } from "lucide-react";
 import type { ModelViewerElement } from "@/types/model-viewer";
 
-/** Minimum overlay duration (ms): ensures models have enough time to decode in the background before dismissing the loading screen. */
-const MIN_OVERLAY_MS = 2000;
-const OVERLAY_EXIT_DURATION = 0.85;
+/** Minimum overlay duration (ms): wait for all 4 models to decode before dismissing. */
+const MIN_OVERLAY_MS = 4000;
+const OVERLAY_EXIT_DURATION = 1.2;
 
 export function HomeView() {
   const [modelReady, setModelReady] = useState(false);
