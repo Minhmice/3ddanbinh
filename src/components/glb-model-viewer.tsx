@@ -1,8 +1,9 @@
 "use client";
 
 import { gsap } from "gsap";
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
-import { ANATOMY_LAYERS } from "@/lib/layer-config";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from "react";
+import { ANATOMY_LAYERS, EAGER_COUNT } from "@/lib/layer-config";
+import type { LayerName } from "@/lib/layer-config";
 import type { ModelViewerElement } from "@/types/model-viewer";
 
 const MODEL_VIEWER_SRC =
@@ -14,27 +15,28 @@ const ORBIT_END_MOBILE = { az: 0, el: 90, r: 11 } as const;
 const ORBIT_START_MOBILE = { az: 75, el: 45, r: 24 } as const;
 
 const TARGET_DEFAULT = "3m 3m 0.92m";
-const TARGET_MOBILE = "3.2m 3m 0.92m"; // Shift slightly right for mobile center
+const TARGET_MOBILE = "3.2m 3m 0.92m";
 const INTRO_DURATION = 1.5;
 
 // Base layer handles interactions and camera bounding.
-// 0: Backdrop, 1: Anatomy (Xương), 2: Muscle, 3: Muscle Detail
 const BASE_INDEX = 0;
 
 type GlbModelViewerProps = {
   introEnabled?: boolean;
   onModelLoaded?: () => void;
   cameraDebugOpen?: boolean;
+  /** Which layers are currently enabled (visible). Lazy layers only mount when enabled. */
+  enabledLayers: Record<LayerName, boolean>;
 };
 
 export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps>(
-  ({ introEnabled = true, onModelLoaded, cameraDebugOpen = false }, ref) => {
+  ({ introEnabled = true, onModelLoaded, cameraDebugOpen = false, enabledLayers }, ref) => {
     const [viewerReady, setViewerReady] = useState(false);
-    const [loadedCount, setLoadedCount] = useState(0);
+    const [eagerLoadedCount, setEagerLoadedCount] = useState(0);
     const [introComplete, setIntroComplete] = useState(false);
     const [debugOrbit, setDebugOrbit] = useState("");
     const [isMobile, setIsMobile] = useState(false);
-    
+
     // Detect mobile for better framing
     useEffect(() => {
       const checkMobile = () => {
@@ -44,12 +46,14 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       window.addEventListener("resize", checkMobile);
       return () => window.removeEventListener("resize", checkMobile);
     }, []);
-    
+
     const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(ANATOMY_LAYERS.length).fill(null));
-    
+    // Track which lazy layers have already been loaded (so we don't re-count on re-enable)
+    const lazyLoadedRef = useRef<Set<string>>(new Set());
+
     useImperativeHandle(ref, () => layerRefs.current[BASE_INDEX] as ModelViewerElement, []);
 
-    // 1. Initial Injection of script
+    // ── 1. Script injection ──
     useEffect(() => {
       if (typeof window === "undefined") return;
       let cancelled = false;
@@ -84,154 +88,198 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       return () => { cancelled = true; };
     }, []);
 
-    // 2. Load events for all models
+    // ── 2. Load events for EAGER models only (gate for loading screen) ──
     useEffect(() => {
       if (!viewerReady) return;
-      
-      const handleLoad = () => setLoadedCount((c) => c + 1);
 
-      layerRefs.current.forEach(layer => {
-         if (!layer) return;
-         if (layer.loaded) handleLoad();
-         else layer.addEventListener("load", handleLoad, { once: true });
+      const handleEagerLoad = () => setEagerLoadedCount((c) => c + 1);
+
+      ANATOMY_LAYERS.forEach((config, index) => {
+        if (!config.eager) return; // skip lazy layers
+        const layer = layerRefs.current[index];
+        if (!layer) return;
+        if (layer.loaded) handleEagerLoad();
+        else layer.addEventListener("load", handleEagerLoad, { once: true });
       });
-
     }, [viewerReady]);
 
-    // 3. Notify parent when all models finish loading
+    // ── 3. Notify parent when eager models loaded ══
     useEffect(() => {
-      if (loadedCount === ANATOMY_LAYERS.length) {
+      if (eagerLoadedCount >= EAGER_COUNT) {
         onModelLoaded?.();
       }
-    }, [loadedCount, onModelLoaded]);
+    }, [eagerLoadedCount, onModelLoaded]);
 
-    // 4. Synchronize Camera strictly from Base -> Overlays
+    // ── Helper: sync camera from base to a specific layer element ──
+    const syncCameraToLayer = useCallback((layer: ModelViewerElement) => {
+      const base = layerRefs.current[BASE_INDEX];
+      if (!base || typeof base.getCameraOrbit !== "function") return;
+
+      try {
+        const orbit = base.getCameraOrbit().toString();
+        const target = base.getCameraTarget().toString();
+        const fov = base.getFieldOfView();
+
+        layer.cameraOrbit = orbit;
+        layer.cameraTarget = target;
+        layer.fieldOfView = `${fov}deg`;
+        layer.setAttribute("camera-orbit", orbit);
+        layer.setAttribute("camera-target", target);
+        layer.setAttribute("field-of-view", `${fov}deg`);
+        if (typeof layer.jumpCameraToGoal === "function") {
+          layer.jumpCameraToGoal();
+        }
+      } catch (e) {
+        console.error("[CameraSync] Error syncing to layer", e);
+      }
+    }, []);
+
+    // ── 4. On lazy layer mount → sync camera immediately ──
+    const handleLayerRef = useCallback(
+      (index: number) => (node: any) => {
+        const prev = layerRefs.current[index];
+        layerRefs.current[index] = node;
+
+        // If this is a NEW mount (prev was null, now it's not), sync camera
+        if (node && !prev && index !== BASE_INDEX) {
+          // Need to wait for the element to be ready
+          const trySync = () => {
+            if (node.loaded) {
+              syncCameraToLayer(node);
+            } else {
+              node.addEventListener("load", () => syncCameraToLayer(node), { once: true });
+            }
+          };
+
+          // Small delay to ensure model-viewer custom element is upgraded
+          requestAnimationFrame(trySync);
+        }
+      },
+      [syncCameraToLayer]
+    );
+
+    // ── 5. Synchronize Camera from Base → all mounted Overlays ──
     useEffect(() => {
-       if (!viewerReady) return;
-       const base = layerRefs.current[BASE_INDEX];
-       if (!base) return;
+      if (!viewerReady) return;
+      const base = layerRefs.current[BASE_INDEX];
+      if (!base) return;
 
-        const syncCamera = () => {
-          try {
-              if (typeof base.getCameraOrbit !== 'function') return;
-              const orbit = base.getCameraOrbit().toString();
-              const target = base.getCameraTarget().toString();
-              const fov = base.getFieldOfView();
+      const syncCamera = () => {
+        try {
+          if (typeof base.getCameraOrbit !== "function") return;
+          const orbit = base.getCameraOrbit().toString();
+          const target = base.getCameraTarget().toString();
+          const fov = base.getFieldOfView();
 
-              if (!orbit || !target || fov == null) return;
-              
-              const orb = base.getCameraOrbit();
-              const tgt = base.getCameraTarget();
-              setDebugOrbit(
-                `Orbit: (AZ) ${Math.round(orb.theta * 180 / Math.PI)}° | (EL) ${Math.round(orb.phi * 180 / Math.PI)}° | Zoom (R) ${orb.radius.toFixed(2)}m\nTarget (Pan): X: ${tgt.x.toFixed(3)} | Y: ${tgt.y.toFixed(3)} | Z: ${tgt.z.toFixed(3)}`
-              );
+          if (!orbit || !target || fov == null) return;
 
-              layerRefs.current.forEach((layer, index) => {
-                 if (index !== BASE_INDEX && layer) {
-                    try {
-                        layer.cameraOrbit = orbit;
-                        layer.cameraTarget = target;
-                        layer.fieldOfView = `${fov}deg`;
-                        
-                        // Also force attributes for stable sync
-                        layer.setAttribute("camera-orbit", orbit);
-                        layer.setAttribute("camera-target", target);
-                        layer.setAttribute("field-of-view", `${fov}deg`);
+          const orb = base.getCameraOrbit();
+          const tgt = base.getCameraTarget();
+          setDebugOrbit(
+            `Orbit: (AZ) ${Math.round((orb.theta * 180) / Math.PI)}° | (EL) ${Math.round((orb.phi * 180) / Math.PI)}° | Zoom (R) ${orb.radius.toFixed(2)}m\nTarget (Pan): X: ${tgt.x.toFixed(3)} | Y: ${tgt.y.toFixed(3)} | Z: ${tgt.z.toFixed(3)}`
+          );
 
-                        if (typeof layer.jumpCameraToGoal === 'function') {
-                            layer.jumpCameraToGoal();
-                        }
-                    } catch (e) {
-                        console.error("[CameraSync] Error on layer", index, e);
-                    }
-                 }
-              });
-          } catch (e) {
-              console.error("[CameraSync] Critical Error", e);
-          }
-       };
+          layerRefs.current.forEach((layer, index) => {
+            if (index !== BASE_INDEX && layer) {
+              try {
+                layer.cameraOrbit = orbit;
+                layer.cameraTarget = target;
+                layer.fieldOfView = `${fov}deg`;
+                layer.setAttribute("camera-orbit", orbit);
+                layer.setAttribute("camera-target", target);
+                layer.setAttribute("field-of-view", `${fov}deg`);
+                if (typeof layer.jumpCameraToGoal === "function") {
+                  layer.jumpCameraToGoal();
+                }
+              } catch (e) {
+                console.error("[CameraSync] Error on layer", index, e);
+              }
+            }
+          });
+        } catch (e) {
+          console.error("[CameraSync] Critical Error", e);
+        }
+      };
 
-       base.addEventListener("camera-change", syncCamera);
-       return () => base.removeEventListener("camera-change", syncCamera);
+      base.addEventListener("camera-change", syncCamera);
+      return () => base.removeEventListener("camera-change", syncCamera);
     }, [viewerReady]);
 
-    // 4.1. Custom Synchronized Idle Animation across all 4 layers
+    // ── 6. Custom Synchronized Idle Rotation ──
     useEffect(() => {
-       if (!viewerReady || !introComplete) return;
-       const base = layerRefs.current[BASE_INDEX];
-       if (!base) return;
+      if (!viewerReady || !introComplete) return;
+      const base = layerRefs.current[BASE_INDEX];
+      if (!base) return;
 
-       let idleTimeout: NodeJS.Timeout;
-       let rafId: number;
-       let isIdle = false;
-       let lastTime = 0;
+      let idleTimeout: NodeJS.Timeout;
+      let rafId: number;
+      let isIdle = false;
+      let lastTime = 0;
 
-       const stopIdleAndReset = () => {
-          isIdle = false;
-          cancelAnimationFrame(rafId);
-          clearTimeout(idleTimeout);
-          idleTimeout = setTimeout(() => {
-             isIdle = true;
-             lastTime = performance.now();
-             loop();
-          }, 2000); // 2000ms delay after interaction
-       };
+      const stopIdleAndReset = () => {
+        isIdle = false;
+        cancelAnimationFrame(rafId);
+        clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          isIdle = true;
+          lastTime = performance.now();
+          loop();
+        }, 2000);
+      };
 
-       const handleInteract = (e: any) => {
-          if (e.detail && e.detail.source === 'user-interaction') {
-             stopIdleAndReset();
-          }
-       };
+      const handleInteract = (e: any) => {
+        if (e.detail && e.detail.source === "user-interaction") {
+          stopIdleAndReset();
+        }
+      };
 
-       const loop = () => {
-          if (!isIdle) return;
-          const now = performance.now();
-          const dt = Math.min(now - lastTime, 50); // cap dt
-          lastTime = now;
+      const loop = () => {
+        if (!isIdle) return;
+        const now = performance.now();
+        const dt = Math.min(now - lastTime, 50);
+        lastTime = now;
 
-          // Rotate by 1 degree per second
-          const rotSpeedRad = (Math.PI / 180) * (dt / 1000);
-          
-          const orb = base.getCameraOrbit();
-          const fov = base.getFieldOfView();
-          const tgt = base.getCameraTarget();
-          
-          if (orb) {
-             const newTheta = orb.theta + rotSpeedRad;
-             const orbitStr = `${newTheta}rad ${orb.phi}rad ${orb.radius}m`;
-             const targetStr = `${tgt.x}m ${tgt.y}m ${tgt.z}m`;
+        const rotSpeedRad = (Math.PI / 180) * (dt / 1000);
 
-             layerRefs.current.forEach(layer => {
-                if (layer) {
-                   layer.cameraOrbit = orbitStr;
-                   layer.cameraTarget = targetStr;
-                   layer.fieldOfView = `${fov}deg`;
-                   layer.setAttribute("camera-orbit", orbitStr);
-                   if (typeof layer.jumpCameraToGoal === 'function') {
-                      layer.jumpCameraToGoal();
-                   }
-                }
-             });
-          }
-          
-          rafId = requestAnimationFrame(loop);
-       }
+        const orb = base.getCameraOrbit();
+        const fov = base.getFieldOfView();
+        const tgt = base.getCameraTarget();
 
-       // Start initial idle wait
-       stopIdleAndReset();
-       base.addEventListener("camera-change", handleInteract);
+        if (orb) {
+          const newTheta = orb.theta + rotSpeedRad;
+          const orbitStr = `${newTheta}rad ${orb.phi}rad ${orb.radius}m`;
+          const targetStr = `${tgt.x}m ${tgt.y}m ${tgt.z}m`;
 
-       return () => {
-          clearTimeout(idleTimeout);
-          cancelAnimationFrame(rafId);
-          base.removeEventListener("camera-change", handleInteract);
-       };
+          layerRefs.current.forEach((layer) => {
+            if (layer) {
+              layer.cameraOrbit = orbitStr;
+              layer.cameraTarget = targetStr;
+              layer.fieldOfView = `${fov}deg`;
+              layer.setAttribute("camera-orbit", orbitStr);
+              if (typeof layer.jumpCameraToGoal === "function") {
+                layer.jumpCameraToGoal();
+              }
+            }
+          });
+        }
+
+        rafId = requestAnimationFrame(loop);
+      };
+
+      stopIdleAndReset();
+      base.addEventListener("camera-change", handleInteract);
+
+      return () => {
+        clearTimeout(idleTimeout);
+        cancelAnimationFrame(rafId);
+        base.removeEventListener("camera-change", handleInteract);
+      };
     }, [viewerReady, introComplete]);
 
-    // 5. Intro Animation (Only animates the Base, which automatically syncs the Overlay)
+    // ── 7. Intro Animation ──
     useEffect(() => {
-      if (!viewerReady || loadedCount < ANATOMY_LAYERS.length || !introEnabled) return;
-      
+      if (!viewerReady || eagerLoadedCount < EAGER_COUNT || !introEnabled) return;
+
       const base = layerRefs.current[BASE_INDEX];
       if (!base) return;
 
@@ -239,7 +287,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
       const applyOrbit = (az: number, elDeg: number, r: number) => {
         base.cameraOrbit = `${az}deg ${elDeg}deg ${r}m`;
-        base.jumpCameraToGoal(); // Note: This triggers "camera-change" allowing sync loop to catch it automatically
+        base.jumpCameraToGoal();
       };
 
       const finishIntro = () => {
@@ -248,8 +296,10 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-      // Ensure framing is updated first
-      base.updateFraming().catch(() => {}).finally(() => {
+      base
+        .updateFraming()
+        .catch(() => {})
+        .finally(() => {
           const finalOrbit = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
           const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
 
@@ -258,9 +308,9 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
             finishIntro();
             return;
           }
-    
+
           const state = { az: startOrbit.az, el: startOrbit.el, r: startOrbit.r };
-    
+
           gsap.to(state, {
             az: finalOrbit.az,
             el: finalOrbit.el,
@@ -270,11 +320,10 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
             onUpdate: () => applyOrbit(state.az, state.el, state.r),
             onComplete: finishIntro,
           });
-      });
+        });
+    }, [viewerReady, eagerLoadedCount, introEnabled, isMobile]);
 
-    }, [viewerReady, loadedCount, introEnabled]);
-
-    const currentOrbitEnd = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+    // ── Render ──
     const currentOrbitStart = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
     const initialOrbit = `${currentOrbitStart.az}deg ${currentOrbitStart.el}deg ${currentOrbitStart.r}m`;
     const currentTarget = isMobile ? TARGET_MOBILE : TARGET_DEFAULT;
@@ -291,36 +340,50 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     const handleDoubleClick = () => {
       if (!viewerReady || !introComplete) return;
       const base = layerRefs.current[BASE_INDEX];
+      const orbitEnd = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
       if (base) {
-        // Native model-viewer dampens to this target automatically
-        base.cameraOrbit = `${ORBIT_END.az}deg ${ORBIT_END.el}deg ${ORBIT_END.r}m`;
+        base.cameraOrbit = `${orbitEnd.az}deg ${orbitEnd.el}deg ${orbitEnd.r}m`;
       }
     };
 
     return (
       <div className="fixed inset-0 z-30 bg-[#e7e7e7]" onDoubleClick={handleDoubleClick}>
         {ANATOMY_LAYERS.map((config, index) => {
-           const isBase = index === BASE_INDEX;
-           return (
-             <model-viewer
-               key={config.id}
-               id={`layer-${config.id}`}
-               ref={(node: any) => { layerRefs.current[index] = node; }}
-               src={config.src}
-               alt={config.label}
-               camera-controls={isBase && introComplete ? true : undefined}
-               camera-orbit={initialOrbit}
-               camera-target={currentTarget}
-               min-camera-orbit="auto auto 0.1m"
-               max-camera-orbit="auto auto 100m"
-               min-field-of-view="10deg"
-               max-field-of-view="170deg"
-               interaction-prompt="none"
-               className={`block w-full h-[100dvh] absolute inset-0 bg-transparent [&::part(default-progress-bar)]:hidden ${
-                 !isBase ? "pointer-events-none" : ""
-               }`}
-             />
-           );
+          const isBase = index === BASE_INDEX;
+          const isEnabled = enabledLayers[config.id];
+
+          // LAZY LOADING: Don't mount model-viewer at all for disabled lazy layers
+          // Eager layers always mount (they're needed for loading screen + base camera)
+          if (!config.eager && !isEnabled) {
+            return null;
+          }
+
+          return (
+            <model-viewer
+              key={config.id}
+              id={`layer-${config.id}`}
+              ref={handleLayerRef(index)}
+              src={config.src}
+              alt={config.label}
+              camera-controls={isBase && introComplete ? true : undefined}
+              camera-orbit={initialOrbit}
+              camera-target={currentTarget}
+              min-camera-orbit="auto auto 0.1m"
+              max-camera-orbit="auto auto 100m"
+              min-field-of-view="10deg"
+              max-field-of-view="170deg"
+              interaction-prompt="none"
+              loading={config.eager ? "eager" : "lazy"}
+              className={`block w-full h-[100dvh] absolute inset-0 bg-transparent [&::part(default-progress-bar)]:hidden ${
+                !isBase ? "pointer-events-none" : ""
+              }`}
+              style={{
+                // Hide via opacity for lazy layers that are mounted but toggled off
+                opacity: isEnabled ? 1 : 0,
+                transition: "opacity 0.4s ease-out",
+              }}
+            />
+          );
         })}
 
         {/* Camera Parameters Debug Panel (toggled via button) */}

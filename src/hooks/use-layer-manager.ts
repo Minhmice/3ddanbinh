@@ -13,8 +13,8 @@ export function useLayerManager() {
   const [layers, setLayers] = useState<Record<LayerName, LayerState>>({
     backdrop: { enabled: true, opacity: 1 },
     anatomy: { enabled: true, opacity: 1 },
-    muscle: { enabled: true, opacity: 1 },
-    muscle_detail: { enabled: true, opacity: 1 },
+    muscle: { enabled: false, opacity: 1 },       // lazy: loads on toggle
+    muscle_detail: { enabled: false, opacity: 1 }, // lazy: loads on toggle
   });
 
   const [mode, setMode] = useState<LayerMode>("blend");

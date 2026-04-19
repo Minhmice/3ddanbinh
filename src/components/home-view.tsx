@@ -93,6 +93,12 @@ export function HomeView() {
           setModelReady(true);
         }}
         cameraDebugOpen={cameraDebugOpen}
+        enabledLayers={{
+          backdrop: layerManager.layers.backdrop.enabled,
+          anatomy: layerManager.layers.anatomy.enabled,
+          muscle: layerManager.layers.muscle.enabled,
+          muscle_detail: layerManager.layers.muscle_detail.enabled,
+        }}
       />
 
       {/* === DESKTOP: Layer Control Panel (hidden on mobile) === */}

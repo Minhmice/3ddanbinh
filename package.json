@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "fetch-models": "python3 scripts/fetch-drive-assets.py || python scripts/fetch-drive-assets.py",
+    "optimize-models": "node scripts/optimize-models.mjs",
     "predev": "npm run fetch-models",
     "prebuild": "npm run fetch-models",
     "dev": "next dev",

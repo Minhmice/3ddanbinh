@@ -25,6 +25,12 @@ declare module "react" {
           "camera-target"?: string;
           "min-camera-orbit"?: string;
           "max-camera-orbit"?: string;
+          "min-field-of-view"?: string;
+          "max-field-of-view"?: string;
+          "interaction-prompt"?: string;
+          loading?: "auto" | "eager" | "lazy";
+          reveal?: string;
+          poster?: string;
         },
         HTMLElement
       >;
