@@ -10,7 +10,11 @@ const MODEL_VIEWER_SRC =
 
 const ORBIT_END = { az: 0, el: 90, r: 20 } as const;
 const ORBIT_START = { az: 75, el: 45, r: 36 } as const;
+const ORBIT_END_MOBILE = { az: 0, el: 90, r: 11 } as const;
+const ORBIT_START_MOBILE = { az: 75, el: 45, r: 24 } as const;
+
 const TARGET_DEFAULT = "3m 3m 0.92m";
+const TARGET_MOBILE = "3.2m 3m 0.92m"; // Shift slightly right for mobile center
 const INTRO_DURATION = 1.5;
 
 // Base layer handles interactions and camera bounding.
@@ -29,6 +33,17 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     const [loadedCount, setLoadedCount] = useState(0);
     const [introComplete, setIntroComplete] = useState(false);
     const [debugOrbit, setDebugOrbit] = useState("");
+    const [isMobile, setIsMobile] = useState(false);
+    
+    // Detect mobile for better framing
+    useEffect(() => {
+      const checkMobile = () => {
+        setIsMobile(window.innerWidth < 768);
+      };
+      checkMobile();
+      window.addEventListener("resize", checkMobile);
+      return () => window.removeEventListener("resize", checkMobile);
+    }, []);
     
     const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(ANATOMY_LAYERS.length).fill(null));
     
@@ -235,18 +250,21 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
       // Ensure framing is updated first
       base.updateFraming().catch(() => {}).finally(() => {
+          const finalOrbit = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+          const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
+
           if (reduceMotion) {
-            applyOrbit(ORBIT_END.az, ORBIT_END.el, ORBIT_END.r);
+            applyOrbit(finalOrbit.az, finalOrbit.el, finalOrbit.r);
             finishIntro();
             return;
           }
     
-          const state = { az: ORBIT_START.az, el: ORBIT_START.el, r: ORBIT_START.r };
+          const state = { az: startOrbit.az, el: startOrbit.el, r: startOrbit.r };
     
           gsap.to(state, {
-            az: ORBIT_END.az,
-            el: ORBIT_END.el,
-            r: ORBIT_END.r,
+            az: finalOrbit.az,
+            el: finalOrbit.el,
+            r: finalOrbit.r,
             duration: INTRO_DURATION,
             ease: "power3.out",
             onUpdate: () => applyOrbit(state.az, state.el, state.r),
@@ -256,7 +274,10 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
     }, [viewerReady, loadedCount, introEnabled]);
 
-    const initialOrbit = `${ORBIT_START.az}deg ${ORBIT_START.el}deg ${ORBIT_START.r}m`;
+    const currentOrbitEnd = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+    const currentOrbitStart = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
+    const initialOrbit = `${currentOrbitStart.az}deg ${currentOrbitStart.el}deg ${currentOrbitStart.r}m`;
+    const currentTarget = isMobile ? TARGET_MOBILE : TARGET_DEFAULT;
     const shellClass = "fixed inset-0 z-30 flex flex-col bg-[#e7e7e7] text-muted-foreground";
 
     if (!viewerReady) {
@@ -289,7 +310,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
                alt={config.label}
                camera-controls={isBase && introComplete ? true : undefined}
                camera-orbit={initialOrbit}
-               camera-target={TARGET_DEFAULT}
+               camera-target={currentTarget}
                min-camera-orbit="auto auto 0.1m"
                max-camera-orbit="auto auto 100m"
                min-field-of-view="10deg"

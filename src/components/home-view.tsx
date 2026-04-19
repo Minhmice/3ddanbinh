@@ -183,7 +183,7 @@ export function HomeView() {
 
       {/* === CREDIT FOOTER === */}
       {overlayDismissed && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+        <div className="fixed bottom-12 md:bottom-4 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
           <div className="px-4 py-1.5 rounded-full bg-white/10 backdrop-blur-md border border-white/20 shadow-sm animate-in fade-in slide-in-from-bottom-2 duration-1000">
             <p className="text-[10px] font-bold tracking-[0.3em] text-neutral-500 uppercase whitespace-nowrap">
               DƯƠNG MINH VŨ - 23GDANIM1
