@@ -18,14 +18,12 @@ const TARGET_DEFAULT = "3m 3m 0.92m";
 const TARGET_MOBILE = "3.2m 3m 0.92m";
 const INTRO_DURATION = 1.5;
 
-// Base layer handles interactions and camera bounding.
 const BASE_INDEX = 0;
 
 type GlbModelViewerProps = {
   introEnabled?: boolean;
   onModelLoaded?: () => void;
   cameraDebugOpen?: boolean;
-  /** Which layers are currently enabled (visible). Lazy layers only mount when enabled. */
   enabledLayers: Record<LayerName, boolean>;
 };
 
@@ -37,19 +35,14 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     const [debugOrbit, setDebugOrbit] = useState("");
     const [isMobile, setIsMobile] = useState(false);
 
-    // Detect mobile for better framing
     useEffect(() => {
-      const checkMobile = () => {
-        setIsMobile(window.innerWidth < 768);
-      };
+      const checkMobile = () => setIsMobile(window.innerWidth < 768);
       checkMobile();
       window.addEventListener("resize", checkMobile);
       return () => window.removeEventListener("resize", checkMobile);
     }, []);
 
     const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(ANATOMY_LAYERS.length).fill(null));
-    // Track which lazy layers have already been loaded (so we don't re-count on re-enable)
-    const lazyLoadedRef = useRef<Set<string>>(new Set());
 
     useImperativeHandle(ref, () => layerRefs.current[BASE_INDEX] as ModelViewerElement, []);
 
@@ -57,15 +50,9 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     useEffect(() => {
       if (typeof window === "undefined") return;
       let cancelled = false;
+      const markReady = () => { if (!cancelled) setViewerReady(true); };
 
-      const markReady = () => {
-        if (!cancelled) setViewerReady(true);
-      };
-
-      if (customElements.get("model-viewer")) {
-        markReady();
-        return;
-      }
+      if (customElements.get("model-viewer")) { markReady(); return; }
 
       const existing = document.querySelector<HTMLScriptElement>(`script[src="${MODEL_VIEWER_SRC}"]`);
       if (existing) {
@@ -77,90 +64,83 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       script.type = "module";
       script.src = MODEL_VIEWER_SRC;
       script.async = true;
-      script.onload = () => {
-        customElements.whenDefined("model-viewer").then(markReady);
-      };
-      script.onerror = () => {
-        console.error("[model-viewer] Failed to load script:", MODEL_VIEWER_SRC);
-      };
+      script.onload = () => customElements.whenDefined("model-viewer").then(markReady);
+      script.onerror = () => console.error("[model-viewer] Failed to load:", MODEL_VIEWER_SRC);
       document.head.appendChild(script);
-
       return () => { cancelled = true; };
     }, []);
 
-    // ── 2. Load events for EAGER models are handled directly in handleLayerRef ──
-
-    // ── 3. Notify parent when eager models loaded ══
+    // ── 2. Count eager model loads via useEffect (NOT in ref callback) ──
     useEffect(() => {
-      if (eagerLoadedCount >= EAGER_COUNT) {
-        onModelLoaded?.();
-      }
+      if (!viewerReady) return;
+      const handleLoad = () => setEagerLoadedCount((c) => c + 1);
+
+      ANATOMY_LAYERS.forEach((config, index) => {
+        if (!config.eager) return;
+        const el = layerRefs.current[index];
+        if (!el) return;
+        if (el.loaded) handleLoad();
+        else el.addEventListener("load", handleLoad, { once: true });
+      });
+    }, [viewerReady]);
+
+    // ── 3. Notify parent when eager models loaded ──
+    useEffect(() => {
+      if (eagerLoadedCount >= EAGER_COUNT) onModelLoaded?.();
     }, [eagerLoadedCount, onModelLoaded]);
 
-    // ── Helper: sync camera from base to a specific layer element ──
+    // ── Helper: sync camera from base to a specific layer ──
     const syncCameraToLayer = useCallback((layer: ModelViewerElement) => {
       const base = layerRefs.current[BASE_INDEX];
       if (!base || typeof base.getCameraOrbit !== "function") return;
-
       try {
         const orbit = base.getCameraOrbit().toString();
         const target = base.getCameraTarget().toString();
         const fov = base.getFieldOfView();
-
         layer.cameraOrbit = orbit;
         layer.cameraTarget = target;
         layer.fieldOfView = `${fov}deg`;
         layer.setAttribute("camera-orbit", orbit);
         layer.setAttribute("camera-target", target);
         layer.setAttribute("field-of-view", `${fov}deg`);
-        if (typeof layer.jumpCameraToGoal === "function") {
-          layer.jumpCameraToGoal();
-        }
+        if (typeof layer.jumpCameraToGoal === "function") layer.jumpCameraToGoal();
       } catch (e) {
         console.error("[CameraSync] Error syncing to layer", e);
       }
     }, []);
 
-    // ── 4. On lazy layer mount → sync camera immediately ──
-    const eagerCountedRef = useRef<Set<number>>(new Set());
+    // ── 4. Sync camera when lazy layers mount/unmount ──
+    // We watch enabledLayers changes and sync any newly mounted layers
+    const prevEnabledRef = useRef(enabledLayers);
+    useEffect(() => {
+      const prev = prevEnabledRef.current;
+      prevEnabledRef.current = enabledLayers;
 
-    const handleLayerRef = useCallback(
-      (index: number, config: any) => (node: any) => {
-        const prev = layerRefs.current[index];
-        layerRefs.current[index] = node;
+      // Find layers that just became enabled (were false, now true)
+      ANATOMY_LAYERS.forEach((config, index) => {
+        if (index === BASE_INDEX) return;
+        const wasEnabled = prev[config.id];
+        const nowEnabled = enabledLayers[config.id];
 
-        // If this is a NEW mount (prev was null, now it's not)
-        if (node && !prev) {
-          // Track Eager loads — defer to avoid setState during render
-          if (config.eager && !eagerCountedRef.current.has(index)) {
-            const countEager = () => {
-              if (!eagerCountedRef.current.has(index)) {
-                eagerCountedRef.current.add(index);
-                setEagerLoadedCount((c) => c + 1);
-              }
-            };
+        if (!wasEnabled && nowEnabled) {
+          // Layer just toggled ON — wait for mount + load, then sync camera
+          const waitAndSync = () => {
+            const el = document.getElementById(`layer-${config.id}`) as ModelViewerElement | null;
+            if (!el) return;
 
-            if (node.modelIsVisible || node.loaded) {
-              queueMicrotask(countEager);
+            const doSync = () => syncCameraToLayer(el);
+            if (el.loaded) {
+              doSync();
             } else {
-              node.addEventListener("load", countEager, { once: true });
+              el.addEventListener("load", doSync, { once: true });
             }
-          }
+          };
 
-          if (index !== BASE_INDEX) {
-            const trySync = () => {
-              if (node.modelIsVisible || node.loaded) {
-                syncCameraToLayer(node);
-              } else {
-                node.addEventListener("load", () => syncCameraToLayer(node), { once: true });
-              }
-            };
-            requestAnimationFrame(trySync);
-          }
+          // Give React a frame to mount the element
+          requestAnimationFrame(() => requestAnimationFrame(waitAndSync));
         }
-      },
-      [syncCameraToLayer]
-    );
+      });
+    }, [enabledLayers, syncCameraToLayer]);
 
     // ── 5. Synchronize Camera from Base → all mounted Overlays ──
     useEffect(() => {
@@ -174,7 +154,6 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
           const orbit = base.getCameraOrbit().toString();
           const target = base.getCameraTarget().toString();
           const fov = base.getFieldOfView();
-
           if (!orbit || !target || fov == null) return;
 
           const orb = base.getCameraOrbit();
@@ -192,9 +171,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
                 layer.setAttribute("camera-orbit", orbit);
                 layer.setAttribute("camera-target", target);
                 layer.setAttribute("field-of-view", `${fov}deg`);
-                if (typeof layer.jumpCameraToGoal === "function") {
-                  layer.jumpCameraToGoal();
-                }
+                if (typeof layer.jumpCameraToGoal === "function") layer.jumpCameraToGoal();
               } catch (e) {
                 console.error("[CameraSync] Error on layer", index, e);
               }
@@ -209,7 +186,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       return () => base.removeEventListener("camera-change", syncCamera);
     }, [viewerReady]);
 
-    // ── 6. Custom Synchronized Idle Rotation ──
+    // ── 6. Idle Rotation ──
     useEffect(() => {
       if (!viewerReady || !introComplete) return;
       const base = layerRefs.current[BASE_INDEX];
@@ -232,9 +209,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       };
 
       const handleInteract = (e: any) => {
-        if (e.detail && e.detail.source === "user-interaction") {
-          stopIdleAndReset();
-        }
+        if (e.detail && e.detail.source === "user-interaction") stopIdleAndReset();
       };
 
       const loop = () => {
@@ -244,7 +219,6 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         lastTime = now;
 
         const rotSpeedRad = (Math.PI / 180) * (dt / 1000);
-
         const orb = base.getCameraOrbit();
         const fov = base.getFieldOfView();
         const tgt = base.getCameraTarget();
@@ -260,19 +234,15 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
               layer.cameraTarget = targetStr;
               layer.fieldOfView = `${fov}deg`;
               layer.setAttribute("camera-orbit", orbitStr);
-              if (typeof layer.jumpCameraToGoal === "function") {
-                layer.jumpCameraToGoal();
-              }
+              if (typeof layer.jumpCameraToGoal === "function") layer.jumpCameraToGoal();
             }
           });
         }
-
         rafId = requestAnimationFrame(loop);
       };
 
       stopIdleAndReset();
       base.addEventListener("camera-change", handleInteract);
-
       return () => {
         clearTimeout(idleTimeout);
         cancelAnimationFrame(rafId);
@@ -283,71 +253,58 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     // ── 7. Intro Animation ──
     useEffect(() => {
       if (!viewerReady || eagerLoadedCount < EAGER_COUNT || !introEnabled) return;
-
       const base = layerRefs.current[BASE_INDEX];
       if (!base) return;
 
       setIntroComplete(false);
-
       const applyOrbit = (az: number, elDeg: number, r: number) => {
         base.cameraOrbit = `${az}deg ${elDeg}deg ${r}m`;
         base.jumpCameraToGoal();
       };
-
-      const finishIntro = () => {
-        setIntroComplete(true);
-      };
-
+      const finishIntro = () => setIntroComplete(true);
       const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-      base
-        .updateFraming()
-        .catch(() => {})
-        .finally(() => {
-          const finalOrbit = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
-          const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
+      base.updateFraming().catch(() => {}).finally(() => {
+        const finalOrbit = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
+        const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
 
-          if (reduceMotion) {
-            applyOrbit(finalOrbit.az, finalOrbit.el, finalOrbit.r);
-            finishIntro();
-            return;
-          }
+        if (reduceMotion) {
+          applyOrbit(finalOrbit.az, finalOrbit.el, finalOrbit.r);
+          finishIntro();
+          return;
+        }
 
-          const state = { az: startOrbit.az, el: startOrbit.el, r: startOrbit.r };
-
-          gsap.to(state, {
-            az: finalOrbit.az,
-            el: finalOrbit.el,
-            r: finalOrbit.r,
-            duration: INTRO_DURATION,
-            ease: "power3.out",
-            onUpdate: () => applyOrbit(state.az, state.el, state.r),
-            onComplete: finishIntro,
-          });
+        const state = { az: startOrbit.az, el: startOrbit.el, r: startOrbit.r };
+        gsap.to(state, {
+          az: finalOrbit.az,
+          el: finalOrbit.el,
+          r: finalOrbit.r,
+          duration: INTRO_DURATION,
+          ease: "power3.out",
+          onUpdate: () => applyOrbit(state.az, state.el, state.r),
+          onComplete: finishIntro,
         });
+      });
     }, [viewerReady, eagerLoadedCount, introEnabled, isMobile]);
 
     // ── Render ──
     const currentOrbitStart = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
     const initialOrbit = `${currentOrbitStart.az}deg ${currentOrbitStart.el}deg ${currentOrbitStart.r}m`;
     const currentTarget = isMobile ? TARGET_MOBILE : TARGET_DEFAULT;
-    const shellClass = "fixed inset-0 z-30 flex flex-col bg-[#e7e7e7] text-muted-foreground";
 
     if (!viewerReady) {
       return (
-        <div className={`${shellClass} items-center justify-center`} aria-busy="true" aria-live="polite">
+        <div className="fixed inset-0 z-30 flex flex-col bg-[#e7e7e7] text-muted-foreground items-center justify-center" aria-busy="true">
           Loading 3D viewer…
         </div>
       );
     }
 
     const handleDoubleClick = () => {
-      if (!viewerReady || !introComplete) return;
+      if (!introComplete) return;
       const base = layerRefs.current[BASE_INDEX];
       const orbitEnd = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
-      if (base) {
-        base.cameraOrbit = `${orbitEnd.az}deg ${orbitEnd.el}deg ${orbitEnd.r}m`;
-      }
+      if (base) base.cameraOrbit = `${orbitEnd.az}deg ${orbitEnd.el}deg ${orbitEnd.r}m`;
     };
 
     return (
@@ -356,17 +313,14 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
           const isBase = index === BASE_INDEX;
           const isEnabled = enabledLayers[config.id];
 
-          // LAZY LOADING: Don't mount model-viewer at all for disabled lazy layers
-          // Eager layers always mount (they're needed for loading screen + base camera)
-          if (!config.eager && !isEnabled) {
-            return null;
-          }
+          // Don't mount lazy layers until enabled
+          if (!config.eager && !isEnabled) return null;
 
           return (
             <model-viewer
               key={config.id}
               id={`layer-${config.id}`}
-              ref={handleLayerRef(index, config)}
+              ref={(node: any) => { layerRefs.current[index] = node; }}
               src={config.src}
               alt={config.label}
               camera-controls={isBase && introComplete ? true : undefined}
@@ -382,7 +336,6 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
                 !isBase ? "pointer-events-none" : ""
               }`}
               style={{
-                // Hide via opacity for lazy layers that are mounted but toggled off
                 opacity: isEnabled ? 1 : 0,
                 transition: "opacity 0.4s ease-out",
               }}
@@ -390,7 +343,6 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
           );
         })}
 
-        {/* Camera Parameters Debug Panel (toggled via button) */}
         {introComplete && cameraDebugOpen && (
           <div className="absolute bottom-20 md:bottom-20 left-4 z-50 bg-black/80 backdrop-blur text-white text-[10px] font-mono p-3 rounded-lg pointer-events-none border border-white/10 shadow-xl opacity-80 whitespace-pre-line transition-all animate-in fade-in slide-in-from-bottom-2 duration-200">
             <div className="text-[#00ffcc] mb-1.5 font-bold tracking-wider">🛠 CURRENT CAMERA PARAMETERS</div>
