@@ -20,10 +20,11 @@ const BASE_INDEX = 0;
 type GlbModelViewerProps = {
   introEnabled?: boolean;
   onModelLoaded?: () => void;
+  cameraDebugOpen?: boolean;
 };
 
 export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps>(
-  ({ introEnabled = true, onModelLoaded }, ref) => {
+  ({ introEnabled = true, onModelLoaded, cameraDebugOpen = false }, ref) => {
     const [viewerReady, setViewerReady] = useState(false);
     const [loadedCount, setLoadedCount] = useState(0);
     const [introComplete, setIntroComplete] = useState(false);
@@ -301,9 +302,9 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
            );
         })}
 
-        {/* Debug Panel for Developer to pick default zoom & target */}
-        {introComplete && (
-          <div className="absolute bottom-4 left-4 z-50 bg-black/80 backdrop-blur text-white text-[10px] font-mono p-3 rounded-lg pointer-events-none border border-white/10 shadow-xl opacity-80 whitespace-pre-line">
+        {/* Camera Parameters Debug Panel (toggled via button) */}
+        {introComplete && cameraDebugOpen && (
+          <div className="absolute bottom-20 md:bottom-20 left-4 z-50 bg-black/80 backdrop-blur text-white text-[10px] font-mono p-3 rounded-lg pointer-events-none border border-white/10 shadow-xl opacity-80 whitespace-pre-line transition-all animate-in fade-in slide-in-from-bottom-2 duration-200">
             <div className="text-[#00ffcc] mb-1.5 font-bold tracking-wider">🛠 CURRENT CAMERA PARAMETERS</div>
             <div className="leading-relaxed">{debugOrbit || "Loading parameters..."}</div>
           </div>
