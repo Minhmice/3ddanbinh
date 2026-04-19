@@ -122,6 +122,8 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     }, []);
 
     // ── 4. On lazy layer mount → sync camera immediately ──
+    const eagerCountedRef = useRef<Set<number>>(new Set());
+
     const handleLayerRef = useCallback(
       (index: number, config: any) => (node: any) => {
         const prev = layerRefs.current[index];
@@ -129,26 +131,30 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
         // If this is a NEW mount (prev was null, now it's not)
         if (node && !prev) {
-          // Track Eager loads securely
-          if (config.eager) {
-            if (node.modelIsVisible) {
-              setEagerLoadedCount((c) => c + 1);
+          // Track Eager loads — defer to avoid setState during render
+          if (config.eager && !eagerCountedRef.current.has(index)) {
+            const countEager = () => {
+              if (!eagerCountedRef.current.has(index)) {
+                eagerCountedRef.current.add(index);
+                setEagerLoadedCount((c) => c + 1);
+              }
+            };
+
+            if (node.modelIsVisible || node.loaded) {
+              queueMicrotask(countEager);
             } else {
-              node.addEventListener("load", () => setEagerLoadedCount((c) => c + 1), { once: true });
+              node.addEventListener("load", countEager, { once: true });
             }
           }
 
           if (index !== BASE_INDEX) {
-            // Need to wait for the element to be ready
             const trySync = () => {
-              if (node.modelIsVisible) {
+              if (node.modelIsVisible || node.loaded) {
                 syncCameraToLayer(node);
               } else {
                 node.addEventListener("load", () => syncCameraToLayer(node), { once: true });
               }
             };
-
-            // Small delay to ensure model-viewer custom element is upgraded
             requestAnimationFrame(trySync);
           }
         }
