@@ -1,7 +1,6 @@
 import React, { useEffect, useRef } from "react";
-import { LayerName, ANATOMY_LAYERS } from "@/lib/layer-config";
+import { LayerName, ANATOMY_LAYERS_DESKTOP } from "@/lib/layer-config";
 import { LayerState, LayerMode } from "@/hooks/use-layer-manager";
-import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -34,6 +33,13 @@ export function LayerPanel({
   const isBlend = mode === 'blend';
 
   useEffect(() => {
+    // Skip panel animations on touch/mobile devices.
+    if (typeof window !== "undefined") {
+      const isTouch =
+        "ontouchstart" in window || navigator.maxTouchPoints > 0 || window.innerWidth < 768;
+      if (isTouch) return;
+    }
+
     // 1. Entry Animation: Fade + Slide from right stagger
     if (containerRef.current) {
       gsap.fromTo(
@@ -101,7 +107,7 @@ export function LayerPanel({
         <h3 className="text-[10px] font-bold tracking-[0.2em] text-neutral-500 mb-4 uppercase select-none">Anatomy Layers</h3>
         
         <div className="flex flex-col gap-3">
-          {[ANATOMY_LAYERS[2], ANATOMY_LAYERS[3], ANATOMY_LAYERS[1], ANATOMY_LAYERS[0]].map(config => {
+          {[ANATOMY_LAYERS_DESKTOP[2], ANATOMY_LAYERS_DESKTOP[3], ANATOMY_LAYERS_DESKTOP[1], ANATOMY_LAYERS_DESKTOP[0]].map(config => {
             const state = layers[config.id];
             const isActive = state.enabled;
             

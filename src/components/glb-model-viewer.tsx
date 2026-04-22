@@ -1,8 +1,8 @@
 "use client";
 
 import { gsap } from "gsap";
-import { useEffect, useRef, useState, forwardRef, useImperativeHandle, useCallback } from "react";
-import { ANATOMY_LAYERS } from "@/lib/layer-config";
+import { useEffect, useRef, useState, forwardRef, useImperativeHandle } from "react";
+import { ANATOMY_LAYERS_DESKTOP, ANATOMY_LAYERS_MOBILE_FALLBACK } from "@/lib/layer-config";
 import type { LayerName } from "@/lib/layer-config";
 import type { ModelViewerElement } from "@/types/model-viewer";
 
@@ -17,7 +17,6 @@ const ORBIT_START_MOBILE = { az: 75, el: 45, r: 24 } as const;
 const TARGET_DEFAULT = "3m 3m 0.92m";
 const TARGET_MOBILE = "3.2m 3m 0.92m";
 const INTRO_DURATION = 1.5;
-const TOTAL_LAYERS = ANATOMY_LAYERS.length;
 const BASE_INDEX = 0;
 
 type GlbModelViewerProps = {
@@ -34,16 +33,17 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     const [loadedCount, setLoadedCount] = useState(0);
     const [introComplete, setIntroComplete] = useState(false);
     const [debugOrbit, setDebugOrbit] = useState("");
-    const [isMobile, setIsMobile] = useState(false);
+    const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 768 : false));
+    const layerConfigs = isMobile ? ANATOMY_LAYERS_MOBILE_FALLBACK : ANATOMY_LAYERS_DESKTOP;
+    const totalLayers = layerConfigs.length;
 
     useEffect(() => {
       const check = () => setIsMobile(window.innerWidth < 768);
-      check();
       window.addEventListener("resize", check);
       return () => window.removeEventListener("resize", check);
     }, []);
 
-    const layerRefs = useRef<(ModelViewerElement | null)[]>(new Array(TOTAL_LAYERS).fill(null));
+    const layerRefs = useRef<(ModelViewerElement | null)[]>([]);
     useImperativeHandle(ref, () => layerRefs.current[BASE_INDEX] as ModelViewerElement, []);
 
     // ── 1. Script injection ──
@@ -52,7 +52,10 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       let cancelled = false;
       const markReady = () => { if (!cancelled) setViewerReady(true); };
 
-      if (customElements.get("model-viewer")) { markReady(); return; }
+      if (customElements.get("model-viewer")) {
+        markReady();
+        return;
+      }
 
       const existing = document.querySelector<HTMLScriptElement>(`script[src="${MODEL_VIEWER_SRC}"]`);
       if (existing) {
@@ -64,8 +67,12 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
       script.type = "module";
       script.src = MODEL_VIEWER_SRC;
       script.async = true;
-      script.onload = () => customElements.whenDefined("model-viewer").then(markReady);
-      script.onerror = () => console.error("[model-viewer] Failed to load:", MODEL_VIEWER_SRC);
+      script.onload = () => {
+        customElements.whenDefined("model-viewer").then(markReady);
+      };
+      script.onerror = () => {
+        console.error("[model-viewer] Failed to load:", MODEL_VIEWER_SRC);
+      };
       document.head.appendChild(script);
       return () => { cancelled = true; };
     }, []);
@@ -73,19 +80,20 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
     // ── 2. Wait for ALL models to load ──
     useEffect(() => {
       if (!viewerReady) return;
+      setLoadedCount(0);
       const handleLoad = () => setLoadedCount((c) => c + 1);
 
-      layerRefs.current.forEach((el) => {
+      layerRefs.current.slice(0, totalLayers).forEach((el) => {
         if (!el) return;
         if (el.loaded) handleLoad();
         else el.addEventListener("load", handleLoad, { once: true });
       });
-    }, [viewerReady]);
+    }, [viewerReady, totalLayers]);
 
     // ── 3. Notify parent when ALL models loaded ──
     useEffect(() => {
-      if (loadedCount >= TOTAL_LAYERS) onModelLoaded?.();
-    }, [loadedCount, onModelLoaded]);
+      if (loadedCount >= totalLayers) onModelLoaded?.();
+    }, [loadedCount, onModelLoaded, totalLayers]);
 
     // ── 4. Camera sync: Base → all overlays ──
     useEffect(() => {
@@ -107,7 +115,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
             `Orbit: (AZ) ${Math.round((orb.theta * 180) / Math.PI)}° | (EL) ${Math.round((orb.phi * 180) / Math.PI)}° | Zoom (R) ${orb.radius.toFixed(2)}m\nTarget (Pan): X: ${tgt.x.toFixed(3)} | Y: ${tgt.y.toFixed(3)} | Z: ${tgt.z.toFixed(3)}`
           );
 
-          layerRefs.current.forEach((layer, i) => {
+          layerRefs.current.slice(0, totalLayers).forEach((layer, i) => {
             if (i !== BASE_INDEX && layer) {
               try {
                 layer.cameraOrbit = orbit;
@@ -129,11 +137,11 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
       base.addEventListener("camera-change", syncCamera);
       return () => base.removeEventListener("camera-change", syncCamera);
-    }, [viewerReady]);
+    }, [viewerReady, totalLayers]);
 
     // ── 5. Idle Rotation ──
     useEffect(() => {
-      if (!viewerReady || !introComplete) return;
+      if (!viewerReady || !introComplete || isMobile) return;
       const base = layerRefs.current[BASE_INDEX];
       if (!base) return;
 
@@ -153,8 +161,9 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         }, 2000);
       };
 
-      const handleInteract = (e: any) => {
-        if (e.detail?.source === "user-interaction") stopIdleAndReset();
+      const handleInteract = (e: Event) => {
+        const ce = e as CustomEvent<{ source?: string }>;
+        if (ce.detail?.source === "user-interaction") stopIdleAndReset();
       };
 
       const loop = () => {
@@ -189,11 +198,11 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         cancelAnimationFrame(rafId);
         base.removeEventListener("camera-change", handleInteract);
       };
-    }, [viewerReady, introComplete]);
+    }, [viewerReady, introComplete, isMobile]);
 
     // ── 6. Intro Animation ──
     useEffect(() => {
-      if (!viewerReady || loadedCount < TOTAL_LAYERS || !introEnabled) return;
+      if (!viewerReady || loadedCount < totalLayers || !introEnabled) return;
       const base = layerRefs.current[BASE_INDEX];
       if (!base) return;
 
@@ -203,7 +212,8 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
         base.jumpCameraToGoal();
       };
       const finishIntro = () => setIntroComplete(true);
-      const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const reduceMotion =
+        isMobile || window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
       base.updateFraming().catch(() => {}).finally(() => {
         const end = isMobile ? ORBIT_END_MOBILE : ORBIT_END;
@@ -217,7 +227,7 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
           onComplete: finishIntro,
         });
       });
-    }, [viewerReady, loadedCount, introEnabled, isMobile]);
+    }, [viewerReady, loadedCount, introEnabled, isMobile, totalLayers]);
 
     // ── Render ──
     const startOrbit = isMobile ? ORBIT_START_MOBILE : ORBIT_START;
@@ -241,15 +251,18 @@ export const GlbModelViewer = forwardRef<ModelViewerElement, GlbModelViewerProps
 
     return (
       <div className="fixed inset-0 z-30 bg-[#e7e7e7]" onDoubleClick={handleDoubleClick}>
-        {ANATOMY_LAYERS.map((config, index) => {
+        {layerConfigs.map((config, index) => {
           const isBase = index === BASE_INDEX;
           const isEnabled = enabledLayers[config.id];
 
           return (
             <model-viewer
-              key={config.id}
+              key={`${config.id}:${config.src}`}
               id={`layer-${config.id}`}
-              ref={(node: any) => { layerRefs.current[index] = node; }}
+              ref={(node) => {
+                layerRefs.current[index] = node as unknown as ModelViewerElement | null;
+                layerRefs.current.length = totalLayers;
+              }}
               src={config.src}
               alt={config.label}
               camera-controls={isBase && introComplete ? true : undefined}

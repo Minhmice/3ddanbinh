@@ -13,7 +13,7 @@
  *   npx node scripts/optimize-models.mjs --dry-run
  */
 
-import { readdir, stat, rename, copyFile } from "node:fs/promises";
+import { readdir, stat, rename } from "node:fs/promises";
 import { join, extname, basename } from "node:path";
 import { execSync } from "node:child_process";
 
@@ -39,7 +39,9 @@ async function optimizeModel(filePath) {
     hasBackup = true;
   } catch {}
 
-  if (hasBackup && parseFloat(currentSize) < 10) {
+  // If a backup exists, we have already optimized this model at least once.
+  // Re-optimizing on every install wastes time and can introduce additional loss.
+  if (hasBackup) {
     console.log(`\n⏭ Skipping: ${name} (already optimized, ${currentSize} MB)`);
     return;
   }

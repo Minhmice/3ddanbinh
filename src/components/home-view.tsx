@@ -7,7 +7,6 @@ import { GlbModelViewer } from "@/components/glb-model-viewer";
 import { useLayerManager } from "@/hooks/use-layer-manager";
 import { LayerPanel } from "@/components/layer-panel";
 import { Settings, Camera, X } from "lucide-react";
-import type { ModelViewerElement } from "@/types/model-viewer";
 
 /** Minimum overlay duration (ms): wait for all 4 models to decode before dismissing. */
 const MIN_OVERLAY_MS = 4000;
@@ -17,6 +16,7 @@ export function HomeView() {
   const [modelReady, setModelReady] = useState(false);
   const [overlayDismissed, setOverlayDismissed] = useState(false);
   const [showOverlay, setShowOverlay] = useState(true);
+  const [isMobile, setIsMobile] = useState(false);
 
   // Mobile drawer + camera debug toggle
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
@@ -25,6 +25,13 @@ export function HomeView() {
   const pageStartRef = useRef<number>(0);
   useEffect(() => {
     pageStartRef.current = Date.now();
+  }, []);
+
+  useEffect(() => {
+    const check = () => setIsMobile(window.innerWidth < 768);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
   }, []);
 
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -42,7 +49,7 @@ export function HomeView() {
       "(prefers-reduced-motion: reduce)"
     ).matches;
 
-    if (!el || reduceMotion) {
+    if (!el || reduceMotion || isMobile) {
       setOverlayDismissed(true);
       setShowOverlay(false);
       return;
@@ -58,7 +65,7 @@ export function HomeView() {
         setShowOverlay(false);
       },
     });
-  }, []);
+  }, [isMobile]);
 
   /**
    * Only remove overlay when: model is loaded AND MIN_OVERLAY_MS has passed since page mount
@@ -116,7 +123,7 @@ export function HomeView() {
       )}
 
       {/* === MOBILE: Floating Action Buttons (bottom-right) === */}
-      {overlayDismissed && (
+      {overlayDismissed && !isMobile && (
         <div className="md:hidden fixed bottom-6 right-4 z-40 flex flex-col gap-3">
           {/* Camera Debug Toggle */}
           <button
@@ -151,7 +158,7 @@ export function HomeView() {
       )}
 
       {/* === MOBILE DRAWER (Bottom Sheet) === */}
-      {mobileDrawerOpen && (
+      {mobileDrawerOpen && !isMobile && (
         <div className="md:hidden fixed inset-0 z-50">
           {/* Backdrop - closes drawer on tap */}
           <div
